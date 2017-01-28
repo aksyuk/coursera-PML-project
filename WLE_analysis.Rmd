@@ -1,0 +1,675 @@
+---
+title: "Weight Lifting Exercise Data Analysis"
+author: "Svetlana Aksyuk (s.a.aksuk@gmail.com)"
+date: '27 Jan 2017'
+output: html_document
+---
+  
+```{r Start, echo=F, warning=F, message=F}
+# Load packages ----------------------------------------------------------------
+library('ggplot2')
+library('grid')
+library('caret')
+library('Hmisc')
+# library('chron')
+library('reshape2')
+library('dplyr')
+# library('psych')
+library('GGally')
+# library('rattle')
+library('rpart')
+library('randomForest')
+library('MASS')
+library('class')
+library('kfigr')
+library('knitr')
+
+# CONSTANTS --------------------------------------------------------------------
+# set seed
+my.seed <- 8012017
+
+# ggplot2 layout
+# source: http://stackoverflow.com/questions/9490482/combined-plot-of-ggplot2-not-in-a-single-plot-using-par-or-layout-functio
+vplayout <- function(x, y) viewport(layout.pos.row = x, layout.pos.col = y)
+
+# FUNCTIONS --------------------------------------------------------------------
+# function for errors plot
+drawErrorsPlot <- function(x, y1, nc.1, y2, nc.2, method.labels, title, filename) {
+    png(paste0(filename, '.png'), width = 300, height = 300)
+    par(mar = c(4, 4, 2, 1))
+    par(oma = c(0, 0, 0, 0))
+    plot(x = x, y = y1, 
+         type = 'l', col = 'blue',
+         xlab = 'Number of PC', ylab = 'Error: (1 - Accuracy)*100%',
+         ylim = c(0, 110), xlim = c(0, 21), lwd = 2, axes = F)
+    axis(1, at = seq(0, 20, by = 5), pos = 0)
+    axis(2, at = seq(0, 100, by = 20), pos = 0, las = 2)
+    arrows(x0 = c(0, 20), y0 = c(100, 0),
+           x1 = c(0, 21), y1 = c(110, 0), length = 0.12)
+    # title
+    mtext(title, 3, 0)
+    # target point: lines
+    trg <- pmin(y1, y2)
+    abline(h = 3, lty = 2, lwd = 2, col = 'red')
+    abline(v = x[trg <= 3][1], lty = 2, lwd = 2, col = 'red')
+    # errors: random forest
+    points(x = x[nc.1 == 5], y = y1[nc.1 == 5],
+           pch = 21, bg = grey(0.2), col = grey(0.2))
+    points(x = x[nc.1 != 5], y = y1[nc.1 != 5],
+           pch = 21, bg = 'white', col = 'grey')
+    # errors: CART    
+    lines(x = x, y = y2, type = 'l', col = 'darkgreen', lwd = 2)
+    points(x = x[nc.2 == 5], y = y2[nc.2 == 5],
+           pch = 21, bg = grey(0.2), col = grey(0.2))
+    points(x = x[nc.2 != 5], y = y2[nc.2 != 5],
+           pch = 21, bg = 'white', col = grey(0.5))
+    # target point: dot
+    points(x = x[trg <= 3][1], y = trg[trg <= 3][1], 
+           pch = 21, bg = 'transparent', col = 'yellow', lwd = 2)
+    points(x = x[trg <= 3][1], y = trg[trg <= 3][1], 
+           pch = 21, bg = 'transparent', col = 'red', lwd = 2, cex = 1.5)
+    # target point: axis labels
+    mtext(expression(italic('3%')), 
+          side = 2, at = 7, line = -2.5, las = 2, col = 'red', cex = 0.8)
+    mtext(x[trg <= 3][1], side = 1, line = 0, at = x[trg <= 3][1], col = 'red',
+        cex = 0.8)
+    # legend
+    legend(11.5, 110, legend = c(method.labels, '5 classes', '< 5 classes'), 
+           pch = c(-1, -1, 21, 21), lty = c(1, 1, 0, 0), lwd = c(2, 2, 1, 1),
+           col = c('blue', 'darkgreen', grey(0.2), grey(0.5)),
+           pt.bg = c(NULL, NULL, grey(0.2), 'white'))
+    dev.off()
+    
+}
+
+```
+
+  
+## Summary
+This report is a course project from the Practical Machine Learning by Jeff Leek and the Data Science Track Team. The data for this project was collected and first investigated by: Velloso, Bulling, Gellersen, Ugulino & Fuks (2013). In order to apply knowledge about basic machine learning techniques, we need to train a model to classify observations of physical exercises (class A corresponds to the correct performance, while common mistakes are coded as classes B-E).    
+
+## Data Exploration  
+  
+```{r Load data, echo=F, message=F, warning=F}
+# Load data --------------------------------------------------------------------
+#  training
+# download.file(url = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv',
+#               destfile = 'pml-training.csv')
+training <- read.csv('pml-training.csv', sep = ',', dec = '.', as.is = T,
+                     na.strings = c('NA', '#DIV/0!', ''))
+
+#  testing
+# download.file(url = 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv',
+#               destfile = 'pml-testing.csv')
+testing <- read.csv('pml-testing.csv', sep = ',', dec = '.', as.is = T,
+                    na.strings = c('NA', '#DIV/0!', ''))
+
+# train and validation sets
+set.seed(my.seed)
+inTrain <- createDataPartition(y = training$classe, p = 0.75, list = F)
+training.set <- training[inTrain, ]
+validation.set <- training[-inTrain, ]
+```
+  
+Dataset contains `r dim(training)[2]` variables. First, raw training dataset was splitted in two parts: one for model training (75%, or `r dim(training.set)[1]` observations), another for validation of results (the remaining 25%, or `r dim(validation.set)[1]`). Testing set contains `r dim(testing)[1]` observations.   
+  
+```{r Explore non-numeric, echo=F, message=F, warning=F}
+# make dependent variable (classe) a factor
+training.set$classe <- as.factor(training.set$classe)
+
+# read classes of columns
+col.classes <- unlist(lapply(training.set, class))
+
+tbl <- data.frame(Variable = names(col.classes[col.classes != 'numeric' & col.classes != 'integer']), 
+                  Class = col.classes[col.classes != 'numeric' & col.classes != 'integer'])
+rownames(tbl) <- seq_along(tbl$Variable)
+tbl$NA.percent <- round(apply(training.set[, names(training.set) %in% tbl$Variable], 2, function(x) length(which(is.na(x)))) / nrow(training.set) * 100, 1)
+
+# make dates
+dtimes <- training.set$cvtd_timestamp
+training.set$cvtd_timestamp <- strptime(paste(dtimes, ':00', sep = ''), format = c('%d/%m/%Y %H:%M:%S'),
+                                    tz = 'UTC')
+class(training.set$cvtd_timestamp) <- 'POSIXlt'
+```  
+  
+### Non-numeric variables
+  
+Dependent variable is named ```classe```. Proportion of class A is about `r round(summary(training.set$classe)['A'] / nrow(training.set), 2)` of the training set. Classes B, C, D, E are roughly around `r round(mean((summary(training.set$classe) / nrow(training.set))[2:5]), 2)` (**Figure** `r figr('Plot-01', type = 'figure')`-A). **Table** `r figr('Table-01', TRUE, type='table')` shows  variables, which values are neither numeric nor integer. As we can see, all logical variables are empty, so can be removed. We need to run some tests to determine whether ```classe``` depends on character variables ```user_name``` and ```new_window```. Variable ```cvtd_timestamp``` has to be recoded into data format and to be treated as numeric.  
+  
+  Theoretically, there should be no connection between individual who performed the task and dependent variable. But P-value of chi-square test for independence is `r formatC(chisq.test(table(training.set$classe, as.factor(training.set$user_name)))$p.value, digits=4, format='f')`, which is less than 0.05, so this variables are somehow connected. We can see from **Figure **`r figr('Plot-01', type = 'figure')`-B, that histograms of ```classe``` for different users are not the same. Nevertheless, the question is: can we predict whether exercise is performed correctly, using data from sensors for any individual? To answer this, we have to eliminate information about user from the training set. For the same reasons we exclude ```cvtd_timestamp```, though chi-square test rejects hypothesis about independence (P-value = `r formatC(chisq.test(table(training.set$classe, cut(as.numeric(training.set$cvtd_timestamp), 4)))$p.value, digits=4, format='f')`). We drop ```raw_timestamp_part_1``` and ```raw_timestamp_part_2``` too.    
+  
+  Variable ```new_window``` is, in fact, logical (**Figure **`r figr('Plot-01', type = 'figure')`-C) and represents some characteristic of an experiment. Since P-value of chi-square test for independence: `r formatC(chisq.test(table(training.set$classe, as.factor(training.set$new_window)))$p.value, digits=4, format='f')` is greater than 0.05, we can exlude this factor from the dataset.  
+  
+```{r Plot-01, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-01', type = 'figure', link = F),': Proportions of classes in the training set'), fig.height=3.5, fig.align='center', anchor='Figure'}
+gp1 <- ggplot(data.frame(training.set), aes(x = classe))
+gp1 <- gp1 + geom_bar(fill = 'wheat', color = 'brown',
+                      aes(y = ..count../sum(..count..)))
+gp1 <- gp1 + ylab('Frequency')
+gp1 <- gp1 + xlab('A: classe')
+
+gp2 <- ggplot(data.frame(training.set), aes(x = classe))
+gp2 <- gp2 + geom_bar(fill = 'wheat', color = 'brown',
+                      aes(y = ..count../sum(..count..)))
+gp2 <- gp2 + facet_grid(. ~ user_name)
+gp2 <- gp2 + ylab('Frequency')
+gp2 <- gp2 + xlab('B: classe by user_name')
+
+gp3 <- ggplot(data.frame(training.set), aes(x = classe))
+gp3 <- gp3 + geom_bar(fill = 'wheat', color = 'brown',
+                      aes(y = ..count../sum(..count..)))
+gp3 <- gp3 + facet_grid(. ~ new_window)
+gp3 <- gp3 + ylab('Frequency')
+gp3 <- gp3 + xlab('C: classe by new_window')
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(1, 6)))
+print(gp1, vp = vplayout(1, 1))
+print(gp2, vp = vplayout(1, 2:4))
+print(gp3, vp = vplayout(1, 5:6))
+```
+
+```{r Table-01, echo=F, message=F, warning=F, anchor='Table'}
+tbl.short <- data.frame(Class = names(split(tbl, tbl$Class)),
+                        Variables = unlist(lapply(split(tbl, tbl$Class), function(x){paste(x$Variable, collapse = ', ')})),
+                        NA.percent = unlist(lapply(split(tbl, tbl$Class), function(x){mean(x$NA.percent)})))
+kable(tbl.short, caption = paste0('**Table ** ', figr('Table-01', type = 'table', link =  F),': Non numeric (integer) variables'), row.names = F)
+rm(tbl, tbl.short)
+```
+
+```{r Drop non-numeric, echo=F, message=F, warning=F}
+# logical columns are empty, so remove them
+cols.to.remove <- names(col.classes[col.classes == 'logical'])
+# remove some of the chars too
+cols.to.remove <- c(cols.to.remove, 'new_window', 'user_name', 'cvtd_timestamp')
+# and _timestamps_ too
+cols.to.remove <- c(cols.to.remove, 'raw_timestamp_part_1', 'raw_timestamp_part_2')
+
+# Drop non-numeric columns -----------------------------------------------------
+#  from training sample
+training.set <- training.set[, !(names(training.set) %in% cols.to.remove)]
+#  from validation sample
+validation.set <- validation.set[, !(names(validation.set) %in% cols.to.remove)]
+#  from testing sample
+testing <- testing[, !(names(testing) %in% cols.to.remove)]
+```
+
+
+### Numeric variables
+
+```{r Explore numeric, echo=F, message=F, warning=F}
+# count missing values
+na.num <- apply(training.set, 2, function(x) length(which(is.na(x))))
+n.missings <- data.frame(variable = names(na.num[na.num > 0]),
+                         na.count = na.num[na.num > 0],
+                         na.percent = round((na.num[na.num > 0] / nrow(training.set)) * 100, 1))
+rownames(n.missings) <- NULL
+n.missings <- arrange(n.missings, desc(na.percent))
+
+# short version of this table for report
+tbl <- data.frame(variables = unlist(lapply(split(n.missings, n.missings$na.percent), function(x){paste(x$variable, collapse = ', ')})), 
+                  na.percent = as.numeric(names(split(n.missings, n.missings$na.percent))))
+```
+
+```{r Table-02, echo=F, message=F, warning=F, anchor='Table'}
+kable(tbl, caption = paste0('**Table ** ', figr('Table-02', type = 'table', link =  F),': Percent of NA in numeric (integer) variables'), row.names = F)
+rm(tbl)
+```
+
+```{r Drop numeric, echo=F, message=F, warning=F}
+# all numeric with missings are over 97%, drop them
+cols.to.remove <- n.missings$variable
+
+# Drop numeric columns -----------------------------------------------------
+#  from training sample
+training.set <- training.set[, !(names(training.set) %in% cols.to.remove)]
+#  from validation sample
+validation.set <- validation.set[, !(names(validation.set) %in% cols.to.remove)]
+#  from testing sample
+testing <- testing[, !(names(testing) %in% cols.to.remove)]
+```
+  
+**Figure ** `r figr('Plot-02', type = 'figure')` shows plots of first numeric variables with maximum standard deviation. There are variable ```X```, which separates classes perfectly. Since we could not find out the meaning of this variable, and the goal is to train a model on multivariate data, we had excluded ```X``` from dataset too. Next step is to train and compare models using `r dim(training.set)[2]-2` independent variables.  
+  
+<!-- This chunk is cached -->
+```{r Plot-02, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-02', type = 'figure', link = F),': First four numeric variables by class'), fig.height=6, fig.align='center', anchor='Figure', cache=T}
+# Variation in training set -------------------------------------------------
+.sd <- unlist(lapply(training.set, sd))   # считаем СКО
+.plot.vars <- c(names(sort(abs(.sd), decreasing = T)[1:4]), 'classe')
+ggpairs(data = training.set[, .plot.vars], mapping = aes(colour = classe))
+```
+  
+```{r Drop X, echo=F, message=F, warning=F}
+# all numeric with missings are over 97%, drop them
+cols.to.remove <- 'X'
+
+# Drop X --------------------------------------------------------------------
+#  from training sample
+training.set <- training.set[, !(names(training.set) %in% cols.to.remove)]
+#  from validation sample
+validation.set <- validation.set[, !(names(validation.set) %in% cols.to.remove)]
+#  from testing sample
+testing <- testing[, !(names(testing) %in% cols.to.remove)]
+```  
+  
+<!-- This chunk is cached -->
+```{r Correlations, echo=F, message=F, warning=F, cache=T}
+# CORRELATIONS OF CONTINIUS VARIABLES -----------------------------------------
+corr.mtrx <- rcorr(as.matrix(training.set[, !(names(training.set) %in% 'classe')]), type = 'spearman')
+rho <- round(corr.mtrx$r, 2)
+p.val <- round(corr.mtrx$P, 4)
+rm(corr.mtrx)
+
+upperTriangle <- upper.tri(rho, diag = F)
+rho[!upperTriangle] <- NA 
+rho.melted <- na.omit(melt(rho, value.name = 'correlationCoef'))
+colnames(rho.melted) <- c('X1', 'X2', 'r.Spearman')
+
+upperTriangle <- upper.tri(p.val, diag = F)
+p.val[!upperTriangle] <- NA
+p.val.melted <- na.omit(melt(p.val, value.name = 'correlationCoef'))
+colnames(p.val.melted) <- c('X1', 'X2', 'P.value')
+
+corr.spearman <- merge(rho.melted, p.val.melted, by.x = c('X1', 'X2'),
+                       by.y = c('X1', 'X2'))
+
+.strong.connection <- corr.spearman %>% filter(P.value < 0.01) %>% arrange(desc(abs(r.Spearman))) %>% filter(abs(r.Spearman) > 0.7)
+```
+  
+```{r PCA, echo=F, message=F, warning=F, cache=T}
+# PCA
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', thresh = 0.9)
+```
+
+### Data transformations and choice of classification method
+  
+All remaining independent variables are numeric. Correlations between them were estimated with Spearman coefficient, and `r round(nrow(corr.spearman %>% filter(P.value < 0.01))/ nrow(corr.spearman) * 100, 1)`% of coefficients are highly significant (P-values are less than 0.01); about `r round(nrow(.strong.connection) / nrow(corr.spearman) * 100, 1)`% of them show high correlations (absolute values of coefficient are greater than 0.7). Spearman coefficient also evaluates nonlinear relationships, which makes it more universal estimator, than Pearson correlations.  
+  
+Some models are sensitive to the correlation of factors, so we will try two approaches of data transformation:  
+  
+* 1: standardised data (mean = 0, sd = 1);  
+* 2: principal components, standardised and uncorrelated, which describe at least 90% of variance (`r preObj$numComp` PC at training dataset);  
+* 3: first twelve principal components (the number was determined empirically as ```min(12, 15)```, see **Figure **`r figr('Plot-03', type = 'figure')`).  
+  
+Since this is a case of supervised learning, we compared five types of models at principal components without cross validation:  
+
+1. Classification tree -- CART (```rpart()``` from package ```rpart```).  
+2. Random forest (```randomForest()```, package ```randomForest```).  
+3. Linear discriminant analysis -- LDA (```lda()```, package ```MASS```).  
+4. Quadratic discriminant analysis -- QDA (```qda()```, package ```MASS```).  
+5. K-nearest neighbour classification with k = 3 and k = 6 (```knn()```, package ```class```).
+  
+After examination of model errors based on overral accuracy (**Figure **`r figr('Plot-03', type = 'figure')`), two models with errors less than 3% were chosen for training:   
+
+* A: k-nearest neighbour classification;    
+* B: random forest.  
+  
+<!-- This chunk is cached -->
+```{r Test method errors, echo=F, message=F, warning=F, cache=T}
+# rpart, randomForest, class & MASS
+err.df <- data.frame(PC.number = 1:19,
+                     Error.CART.prc = rep(0, 19),
+                     Num.classes.CART = rep(0, 19),
+                     Error.rf.prc = rep(0, 19),
+                     Num.classes.rf = rep(0, 19),
+                     Error.lda.prc = rep(0, 19),
+                     Num.classes.lda = rep(0, 19),
+                     Error.qda.prc = rep(0, 19),
+                     Num.classes.qda = rep(0, 19),
+                     Error.3nn.prc = rep(0, 19),
+                     Num.classes.3nn = rep(0, 19),
+                     Error.6nn.prc = rep(0, 19),
+                     Num.classes.6nn = rep(0, 19))
+
+for (j in 1:19) {
+    # DATA
+    train.data <- predict(preObj, training.set)[, 1:(j+1)]
+    val.data <- predict(preObj, validation.set)[, 1:(j+1)]
+
+    # CART
+    set.seed(my.seed)
+    model <- rpart(classe ~ ., method = 'class', data = train.data)
+    predictions.val <- predict(object = model,
+                               newdata = val.data, type = 'class')
+    err.df[j, 'Num.classes.CART'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.CART.prc'] <- round((1 - confusionMatrix(validation.set$classe,
+                                                              predictions.val)$overall['Accuracy']) * 100, 1)
+
+    # Random forest
+    set.seed(my.seed)
+    model <- randomForest(classe ~ ., data = train.data)
+    predictions.val <- predict(object = model,
+                               newdata = val.data, type = 'class')
+    err.df[j, 'Num.classes.rf'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.rf.prc'] <- round((1 - confusionMatrix(validation.set$classe,
+                                                            predictions.val)$overall['Accuracy']) * 100, 1)
+
+    # LDA
+    set.seed(my.seed)
+    model <- lda(classe ~ ., data = train.data)
+    predictions.val <- predict(object = model,
+                               newdata = val.data, type = 'class')$class
+    err.df[j, 'Num.classes.lda'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.lda.prc'] <- round((1 - confusionMatrix(validation.set$classe,
+                                                            predictions.val)$overall['Accuracy']) * 100, 1)
+
+    # QDA
+    set.seed(my.seed)
+    model <- qda(classe ~ ., data = train.data)
+    predictions.val <- predict(object = model,
+                               newdata = val.data, type = 'class')$class
+    err.df[j, 'Num.classes.qda'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.qda.prc'] <- round((1 - confusionMatrix(validation.set$classe,
+                                                             predictions.val)$overall['Accuracy']) * 100, 1)
+
+    # KNN: 3
+    set.seed(my.seed)
+    predictions.val <- knn(train = data.frame(train.data[, !(names(train.data) %in% 'classe')]), 
+                           test = data.frame(val.data[, !(names(val.data) %in% 'classe')]), 
+                           cl = train.data$classe, k = 3)
+    err.df[j, 'Num.classes.3nn'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.3nn.prc'] <- round((1 - confusionMatrix(validation.set$classe, 
+                                                             predictions.val)$overall['Accuracy']) * 100, 1)
+    
+    # KNN: 6
+    set.seed(my.seed)
+    predictions.val <- knn(train = data.frame(train.data[, !(names(train.data) %in% 'classe')]), 
+                           test = data.frame(val.data[, !(names(val.data) %in% 'classe')]), 
+                           cl = train.data$classe, k = 6)
+    err.df[j, 'Num.classes.6nn'] <- length(table(predictions.val)[table(predictions.val) > 0])
+    err.df[j, 'Error.6nn.prc'] <- round((1 - confusionMatrix(validation.set$classe, 
+                                                             predictions.val)$overall['Accuracy']) * 100, 1)
+}
+
+```
+
+```{r Prepare-Plot-03, include=F}
+# plot for errors on validation set: RF and CART ------------------------------
+drawErrorsPlot(x = err.df[, 'PC.number'],
+               y1 = err.df[, 'Error.rf.prc'], nc.1 = err.df[, 'Num.classes.rf'],
+               y2 = err.df[, 'Error.CART.prc'], nc.2 = err.df[, 'Num.classes.CART'],
+               method.labels = c('rf', 'CART'),
+               title = 'A: Random forest (rf) and classification \n tree (CART)',
+               filename = 'p1')
+
+# plot for errors on validation set: LDA and QDA ------------------------------
+drawErrorsPlot(x = err.df[, 'PC.number'],
+               y1 = err.df[, 'Error.lda.prc'], nc.1 = err.df[, 'Num.classes.lda'],
+               y2 = err.df[, 'Error.qda.prc'], nc.2 = err.df[, 'Num.classes.qda'],
+               method.labels = c('LDA', 'QDA'),
+               title = 'B: Linear (LDA) and quadratic (QDA) \n discriminant analysis', filename = 'p2')
+
+# plot for errors on validation set: KNN with k=3 and k=6 ---------------------
+drawErrorsPlot(x = err.df[, 'PC.number'],
+               y1 = err.df[, 'Error.3nn.prc'], nc.1 = err.df[, 'Num.classes.3nn'],
+               y2 = err.df[, 'Error.6nn.prc'], nc.2 = err.df[, 'Num.classes.6nn'],
+               method.labels = c('3nn', '6nn'),
+               title = 'C: 3 (3nn) and 6 (6nn) nearest neighbour \n classification',
+               filename = 'p3')
+
+# This plot is empty
+png('x.png', height=1)
+par(mar=rep(0,4))
+plot.new()
+dev.off()
+
+```
+  
+![](p1.png) ![](p2.png) ![](p3.png)
+  
+```{r Plot-03, , echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-03', type = 'figure', link = F),': Overral validation set errors for different numbers of PC, without cross validation'), fig.height=0.5, fig.align='center', anchor='Figure'}
+
+knitr::include_graphics('x.png')
+
+# number of PC for approach #3 -------------------------------------------------
+num.pca <- min(err.df[err.df[, 'Error.3nn.prc'] <= 3, 'PC.number'][1],
+               err.df[err.df[, 'Error.rf.prc'] <= 3, 'PC.number'][1])
+
+```
+
+## Models comparison
+  
+<!-- This chunk is cached -->
+```{r Approach 1-A, echo=F, message=F, warning=F, error=F, cache=T}
+
+# compare table
+tbl.all.models <- data.frame(data = rep(c('Standardised', 'PC explain 90%', paste0(num.pca,' PC')), 2),
+                             Method = rep(c('KNN', 'Random forest'), each = 3),
+                             Overral.Accuracy = rep(0, 2*3), 
+                             Min.Balanced.Accuracy = rep('', 2*3),
+                             Max.Balanced.Accuracy = rep('', 2*3))
+tbl.all.models <- data.frame(lapply(tbl.all.models, as.character),
+                             stringsAsFactors=FALSE)
+
+# knn
+# standardised data
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = c('center', 'scale'))
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.knn.1 <- train(classe ~ ., method = 'knn',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.knn.1 <- predict(model.knn.1, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.knn.1)$byClass
+
+i <- 1
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.knn.1)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+tbl.all.models[i, 'Method'] <- paste0(tbl.all.models[i, 'Method'],
+                                      ', k = ', model.knn.1$bestTune)
+
+```
+
+<!-- This chunk is cached -->
+```{r Approach 2-A, echo=F, message=F, warning=F, error=F, cache=T}
+
+# knn
+# All PC
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', thresh = 0.9)
+num.pca.0.9 <- preObj$numComp
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.knn.2 <- train(classe ~ ., method = 'knn',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.knn.2 <- predict(model.knn.2, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.knn.2)$byClass
+
+i <- 2
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.knn.2)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+tbl.all.models[i, 'Method'] <- paste0(tbl.all.models[i, 'Method'],
+                                      ', k = ', model.knn.2$bestTune)
+
+```
+
+<!-- This chunk is cached -->
+```{r Approach 3-A, echo=F, message=F, warning=F, error=F, cache=T}
+
+# knn
+# 15 PC
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', pcaComp = num.pca)
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.knn.3 <- train(classe ~ ., method = 'knn',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.knn.3 <- predict(model.knn.3, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.knn.3)$byClass
+
+i <- 3
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.knn.3)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+tbl.all.models[i, 'Method'] <- paste0(tbl.all.models[i, 'Method'],
+                                      ', k = ', model.knn.3$bestTune)
+
+```
+
+<!-- This chunk is cached -->
+```{r Approach 1-B, echo=F, message=F, warning=F, error=F, cache=T}
+
+# random forest
+# standardised data
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = c('center', 'scale'))
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.rf.1 <- train(classe ~ ., method = 'rf',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.rf.1 <- predict(model.rf.1, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.rf.1)$byClass
+
+i <- 4
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.rf.1)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+
+```
+
+<!-- This chunk is cached -->
+```{r Approach 2-B, echo=F, message=F, warning=F, error=F, cache=T}
+
+# random forest
+# PC, which explain 90%
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', thresh = 0.9)
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.rf.2 <- train(classe ~ ., method = 'rf',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.rf.2 <- predict(model.rf.2, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.rf.2)$byClass
+
+i <- 5
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.rf.2)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+
+```
+
+<!-- This chunk is cached -->
+```{r Approach 3-B, echo=F, message=F, warning=F, error=F, cache=T}
+
+# random forest
+# 15 PC
+
+# PREPARE
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', pcaComp = num.pca)
+train.data <- predict(preObj, training.set)
+# TRAIN
+set.seed(my.seed)
+model.rf.3 <- train(classe ~ ., method = 'rf',  
+                    trControl = trainControl(method = 'cv', number = 3), 
+                    data = train.data)
+# VALIDATE
+val.data <- predict(preObj, validation.set)
+predictions.val.rf.3 <- predict(model.rf.3, newdata = val.data)
+
+tbl <- confusionMatrix(validation.set$classe, predictions.val.rf.3)$byClass
+
+i <- 6
+tbl.all.models[i, 'Overral.Accuracy'] <- round(confusionMatrix(validation.set$classe, predictions.val.rf.3)$overall['Accuracy'], 2)
+min.ba <- min(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Min.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == min.ba]), '; ', round(min.ba, 2))
+max.ba <- max(na.omit(tbl[, 'Balanced Accuracy']))
+tbl.all.models[i, 'Max.Balanced.Accuracy'] <- paste0(na.omit(rownames(tbl)[tbl[, 'Balanced Accuracy'] == max.ba]), '; ', round(max.ba, 2))
+
+```
+  
+For more precise calculation of prediction errors we use k-fold validation with 3 folds in each model at this step via ```train()``` function from package ```caret```. **Table **`r figr('Table-03', type = 'table')` shows accuracy of six models in comparison (3 data transformation approaches and 2 model types), estimated for validation sample. Random forest performs better than k-nearest neighbour classification. Random forest on standardized data shows perfect accuracy, which definitely looks like overfitting. First `r num.pca.0.9` principal components explain more than 90% of variation of `r dim(training.set)[2] - 1` independent variables. Further reduction of the number of components to `r num.pca` results in a slight decrease in the accuracy of models.   
+  
+**Considering accuracy and minimum number of predictors, the best model is the latest: random forest on `r num.pca` principal components.**  
+  
+```{r Table-03, echo=F, message=F, warning=F, error=F, anchor='Table'}
+kable(tbl.all.models, caption = paste0('**Table ** ', figr('Table-03', type = 'table', link =  F),': Accuracy of models calculated on validation set'), row.names = F)
+rm(tbl)
+```
+
+## Prediction and out of sample error estimation
+  
+Out of sample error, estimated as (1 - Overral Accuracy)\*100%, equals to **`r round((1 - as.numeric(tbl.all.models[6, 'Overral.Accuracy']))*100, 1)`%** for the best model.  
+  
+Predictions for the testing set are listed below. Predictions made using the best k-nearest neighbour model (model #1) are the same except for one observation.  
+  
+```{r Prediction, echo=T, message=F, warning=F, error=F}
+# transform testing sample
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = 'pca', pcaComp = num.pca)
+test.data <- predict(preObj, testing)
+# use the best model to make prediction 
+best.prediction <- predict(model.rf.3, newdata = test.data)
+names(best.prediction) <- 1:20
+# show results
+print(best.prediction)
+# compare to best KNN (model #1)
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = c('center', 'scale'))
+test.data <- predict(preObj, testing)
+knn.prediction <- predict(model.knn.1, newdata = test.data)
+table(best.prediction, knn.prediction)
+
+```
+  
+Results for the best model were used as answers to the test, and it appears, that observation 3 has not been classified correctly by the model 6. Prediction for the third observation with model 1 (best KNN) is also incorrect. Model number four, random forest on standardized data, gives correct answer (it seems that accuracy = 1 does not necessarily mean overfitting):   
+
+```{r Final prediction, echo=T, message=F, warning=F, error=F}
+# correct predictions
+correct.prediction <- predict(model.rf.1, newdata = test.data)
+names(correct.prediction) <- 1:20
+print(correct.prediction)
+```
+  
+
+
+## References
+
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
