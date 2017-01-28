@@ -85,7 +85,7 @@ drawErrorsPlot <- function(x, y1, nc.1, y2, nc.2, method.labels, title, filename
 ```
 
   
-## Summary
+## Task
 This report is a course project from the Practical Machine Learning by Jeff Leek and the Data Science Track Team. The data for this project was collected and first investigated by: Velloso, Bulling, Gellersen, Ugulino & Fuks (2013). In order to apply knowledge about basic machine learning techniques, we need to train a model to classify observations of physical exercises (class A corresponds to the correct performance, while common mistakes are coded as classes B-E).    
 
 ## Data Exploration  
@@ -140,7 +140,7 @@ Dependent variable is named ```classe```. Proportion of class A is about `r roun
   
   Variable ```new_window``` is, in fact, logical (**Figure **`r figr('Plot-01', type = 'figure')`-C) and represents some characteristic of an experiment. Since P-value of chi-square test for independence: `r formatC(chisq.test(table(training.set$classe, as.factor(training.set$new_window)))$p.value, digits=4, format='f')` is greater than 0.05, we can exlude this factor from the dataset.  
   
-```{r Plot-01, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-01', type = 'figure', link = F),': Proportions of classes in the training set'), fig.height=3.5, fig.align='center', anchor='Figure'}
+```{r Plot-01, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-01', type = 'figure', link = F),': Proportions of classes in the training set'), fig.height=2.5, fig.align='center', anchor='Figure'}
 gp1 <- ggplot(data.frame(training.set), aes(x = classe))
 gp1 <- gp1 + geom_bar(fill = 'wheat', color = 'brown',
                       aes(y = ..count../sum(..count..)))
@@ -231,10 +231,10 @@ testing <- testing[, !(names(testing) %in% cols.to.remove)]
 **Figure ** `r figr('Plot-02', type = 'figure')` shows plots of first numeric variables with maximum standard deviation. There are variable ```X```, which separates classes perfectly. Since we could not find out the meaning of this variable, and the goal is to train a model on multivariate data, we had excluded ```X``` from dataset too. Next step is to train and compare models using `r dim(training.set)[2]-2` independent variables.  
   
 <!-- This chunk is cached -->
-```{r Plot-02, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-02', type = 'figure', link = F),': First four numeric variables by class'), fig.height=6, fig.align='center', anchor='Figure', cache=T}
+```{r Plot-02, echo=F, message=F, warning=F, fig.cap=paste0('**Figure ** ', figr('Plot-02', type = 'figure', link = F),': First four numeric variables by class'), fig.height=4.2, fig.width=4.2, fig.align='center', anchor='Figure', cache=T}
 # Variation in training set -------------------------------------------------
 .sd <- unlist(lapply(training.set, sd))   # считаем СКО
-.plot.vars <- c(names(sort(abs(.sd), decreasing = T)[1:4]), 'classe')
+.plot.vars <- c(names(sort(abs(.sd), decreasing = T)[1:2]), 'classe')
 ggpairs(data = training.set[, .plot.vars], mapping = aes(colour = classe))
 ```
   
@@ -650,12 +650,6 @@ best.prediction <- predict(model.rf.3, newdata = test.data)
 names(best.prediction) <- 1:20
 # show results
 print(best.prediction)
-# compare to best KNN (model #1)
-preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
-                     method = c('center', 'scale'))
-test.data <- predict(preObj, testing)
-knn.prediction <- predict(model.knn.1, newdata = test.data)
-table(best.prediction, knn.prediction)
 
 ```
   
@@ -663,6 +657,9 @@ Results for the best model were used as answers to the test, and it appears, tha
 
 ```{r Final prediction, echo=T, message=F, warning=F, error=F}
 # correct predictions
+preObj <- preProcess(training.set[, !(names(training.set) %in% 'classe')],
+                     method = c('center', 'scale'))
+test.data <- predict(preObj, testing)
 correct.prediction <- predict(model.rf.1, newdata = test.data)
 names(correct.prediction) <- 1:20
 print(correct.prediction)
